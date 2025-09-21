@@ -1,42 +1,63 @@
-from fastapi import FastAPI, UploadFile, File
+# main.py
+from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse
-import uvicorn
-import os
-from tensorflow.keras.models import load_model
-from tensorflow.keras.preprocessing import image
-import numpy as np
 from PIL import Image
+import numpy as np
+import io
+import tensorflow as tf
+from tensorflow.lite.python.interpreter import Interpreter
 
-# Create FastAPI app
-app = FastAPI()
+app = FastAPI(title="Plant Disease Detection - TFLite")
 
-# Load your model once at startup
-MODEL_PATH = "model.tflite"  # adjust path if needed
-model = load_model(MODEL_PATH)
+# Load TFLite model
+MODEL_PATH = "model.tflite"
+interpreter = Interpreter(model_path=MODEL_PATH)
+interpreter.allocate_tensors()
 
-# ✅ Prediction endpoint
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
+
+# Example class labels
+CLASS_NAMES = [
+    "Apple Scab",
+    "Apple Black Rot",
+    "Apple Cedar Rust",
+    "Apple Healthy"
+]
+
+def preprocess_image(image: Image.Image):
+    # Resize and normalize image to match model input
+    img = image.resize((224, 224))  # change if your model expects different size
+    img_array = np.array(img, dtype=np.float32) / 255.0
+    img_array = np.expand_dims(img_array, axis=0)  # shape (1, 224, 224, 3)
+    return img_array
+
+def predict(img_array: np.ndarray):
+    interpreter.set_tensor(input_details[0]['index'], img_array)
+    interpreter.invoke()
+    output = interpreter.get_tensor(output_details[0]['index'])
+    predicted_index = np.argmax(output[0])
+    predicted_label = CLASS_NAMES[predicted_index]
+    confidence = float(output[0][predicted_index])
+    return predicted_label, confidence
+
 @app.post("/predict")
-async def predict(file: UploadFile = File(...)):
+async def predict_image(file: UploadFile = File(...)):
     try:
-        # Read image
-        img = Image.open(file.file).convert("RGB")
-        img = img.resize((224, 224))  # adjust size to match your model
-        img_array = image.img_to_array(img) / 255.0
-        img_array = np.expand_dims(img_array, axis=0)
+        contents = await file.read()
+        image = Image.open(io.BytesIO(contents)).convert("RGB")
+        img_array = preprocess_image(image)
+        label, confidence = predict(img_array)
 
-        # Run inference
-        prediction = model.predict(img_array)
-        predicted_class = int(np.argmax(prediction, axis=1)[0])
-        confidence = float(np.max(prediction))
-
-        return JSONResponse({
-            "class": predicted_class,
-            "confidence": confidence
-        })
+        return JSONResponse(
+            content={
+                "status": "success",
+                "prediction": label,
+                "confidence": round(confidence, 4)
+            }
+        )
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-# ✅ Run app
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))  # Railway provides PORT
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "message": str(e)}
+        )
