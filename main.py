@@ -1,57 +1,42 @@
-# main.py
 from fastapi import FastAPI, UploadFile, File
-from fastapi.responses import FileResponse
+from fastapi.responses import JSONResponse
+import uvicorn
+import os
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing import image
 import numpy as np
-import cv2
-import uuid
-import os
+from PIL import Image
 
-from utils.class_names import class_names
-
+# Create FastAPI app
 app = FastAPI()
 
-# Load model at startup
-model = load_model("plant_disease_final.h5")
+# Load your model once at startup
+MODEL_PATH = "model.h5"  # adjust path if needed
+model = load_model(MODEL_PATH)
 
-UPLOAD_DIR = "uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-
+# ✅ Prediction endpoint
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
-    # Save uploaded image
-    file_path = os.path.join(UPLOAD_DIR, file.filename)
-    with open(file_path, "wb") as f:
-        f.write(await file.read())
+    try:
+        # Read image
+        img = Image.open(file.file).convert("RGB")
+        img = img.resize((224, 224))  # adjust size to match your model
+        img_array = image.img_to_array(img) / 255.0
+        img_array = np.expand_dims(img_array, axis=0)
 
-    # Preprocess image
-    img = image.load_img(file_path, target_size=(224, 224))
-    img_array = np.expand_dims(np.array(img)/255.0, axis=0)
+        # Run inference
+        prediction = model.predict(img_array)
+        predicted_class = int(np.argmax(prediction, axis=1)[0])
+        confidence = float(np.max(prediction))
 
-    # Predict
-    pred = model.predict(img_array)
-    class_idx = np.argmax(pred)
-    label = class_names[class_idx]
-    confidence = float(pred[0][class_idx])
+        return JSONResponse({
+            "class": predicted_class,
+            "confidence": confidence
+        })
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
-    # Annotate image
-    img_cv = cv2.imread(file_path)
-    cv2.putText(img_cv, f"{label} ({confidence:.2f})", (10,40),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2, cv2.LINE_AA)
-
-    # Save annotated image
-    annotated_name = f"annotated_{uuid.uuid4().hex}.jpg"
-    annotated_path = os.path.join(UPLOAD_DIR, annotated_name)
-    cv2.imwrite(annotated_path, img_cv)
-
-    return {
-        "prediction": label,
-        "confidence": confidence,
-        "annotated_image_url": f"/download/{annotated_name}"
-    }
-
-@app.get("/download/{filename}")
-async def download_file(filename: str):
-    file_path = os.path.join(UPLOAD_DIR, filename)
-    return FileResponse(file_path)
+# ✅ Run app
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))  # Railway provides PORT
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
