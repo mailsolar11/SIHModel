@@ -11,7 +11,7 @@ from PIL import Image
 app = FastAPI()
 
 # Load your model once at startup
-MODEL_PATH = "model.h5"  # adjust path if needed
+MODEL_PATH = "plant_disease_final.h5"  # adjust path if needed
 model = load_model(MODEL_PATH)
 
 # ✅ Prediction endpoint
