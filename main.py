@@ -1,63 +1,53 @@
-# main.py
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse
-from PIL import Image
 import numpy as np
-import io
+from PIL import Image
 import tensorflow as tf
-from tensorflow.lite.python.interpreter import Interpreter
 
-app = FastAPI(title="Plant Disease Detection - TFLite")
+app = FastAPI()
 
 # Load TFLite model
 MODEL_PATH = "model.tflite"
-interpreter = Interpreter(model_path=MODEL_PATH)
+interpreter = tf.lite.Interpreter(model_path=MODEL_PATH)
 interpreter.allocate_tensors()
 
+# Get input and output details
 input_details = interpreter.get_input_details()
 output_details = interpreter.get_output_details()
 
 # Example class labels
-CLASS_NAMES = [
-    "Apple Scab",
-    "Apple Black Rot",
-    "Apple Cedar Rust",
-    "Apple Healthy"
-]
+CLASS_NAMES = ["Apple Scab", "Apple Black Rot", "Cedar Rust", "Healthy"]
 
-def preprocess_image(image: Image.Image):
-    # Resize and normalize image to match model input
-    img = image.resize((224, 224))  # change if your model expects different size
-    img_array = np.array(img, dtype=np.float32) / 255.0
-    img_array = np.expand_dims(img_array, axis=0)  # shape (1, 224, 224, 3)
+def preprocess_image(image: Image.Image, target_size=(224, 224)):
+    image = image.resize(target_size)
+    img_array = np.array(image).astype(np.float32)
+    img_array = img_array / 255.0  # normalize
+    img_array = np.expand_dims(img_array, axis=0)
     return img_array
 
-def predict(img_array: np.ndarray):
-    interpreter.set_tensor(input_details[0]['index'], img_array)
-    interpreter.invoke()
-    output = interpreter.get_tensor(output_details[0]['index'])
-    predicted_index = np.argmax(output[0])
-    predicted_label = CLASS_NAMES[predicted_index]
-    confidence = float(output[0][predicted_index])
-    return predicted_label, confidence
-
 @app.post("/predict")
-async def predict_image(file: UploadFile = File(...)):
+async def predict(file: UploadFile = File(...)):
     try:
-        contents = await file.read()
-        image = Image.open(io.BytesIO(contents)).convert("RGB")
-        img_array = preprocess_image(image)
-        label, confidence = predict(img_array)
+        # Read image
+        image = Image.open(file.file).convert("RGB")
+        input_data = preprocess_image(image, target_size=(224, 224))
 
-        return JSONResponse(
-            content={
-                "status": "success",
-                "prediction": label,
-                "confidence": round(confidence, 4)
-            }
-        )
+        # Set input tensor
+        interpreter.set_tensor(input_details[0]['index'], input_data)
+        interpreter.invoke()
+
+        # Get output
+        output_data = interpreter.get_tensor(output_details[0]['index'])
+        pred_idx = int(np.argmax(output_data))
+        confidence = float(np.max(output_data))
+
+        return JSONResponse({
+            "status": "success",
+            "prediction": CLASS_NAMES[pred_idx],
+            "confidence": round(confidence, 4)
+        })
     except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"status": "error", "message": str(e)}
-        )
+        return JSONResponse({
+            "status": "error",
+            "message": str(e)
+        })
